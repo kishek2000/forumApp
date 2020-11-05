@@ -6,7 +6,7 @@ import json
 ###############################################
 
 
-def handle_authentication():
+def handle_authentication(s):
     is_authenticated = {"success": False, "new": False}
     while (True):
         username = input("Enter username: ")
@@ -38,45 +38,56 @@ def handle_authentication():
     return is_authenticated
 
 
-def handle_system_commands():
+def handle_system_commands(s):
     # Begin an infinite loop for using the system by its commands
     while True:
-        # The commands that can be chosen by a user:
-        commands_list = ["CRT", "MSG", "DLT", "EDT", "LST",
-                         "RDT", "UPD", "DWN", "RMV", "XIT", "SHT"]
+        commands_prompt = s.recv(1024).decode('utf-8')
+        option_choice = input(commands_prompt)
+        s.send(option_choice.encode('utf-8'))
 
-        command_prompt = "Enter one of the following commands: " + \
-            ", ".join(commands_list) + ":\n"
-        option_choice = input(str(command_prompt))
-
-        # The handlers for each command
-        if option_choice[0:3] in commands_list:
-            # Send choice by client to server
-            s.send(str(option_choice).encode('utf-8'))
-            res = s.recv(1024).decode('utf-8')
-            response = json.loads(res.replace("'", "\""))
-            if response["stdout"] == 'True':
-                print(response["msg"])
+        # Server response, validating command:
+        res = s.recv(1024).decode('utf-8')
+        response_validation = get_response_object(res)
+        if response_validation["stdout"] == 'True':
+            # Print error message
+            print(response_validation["msg"])
         else:
-            print("Invalid command")
+            # Send confirmation from client
+            s.send(str({"msg": "confirmed validation",
+                        "stdout": 'False'}).encode('utf-8'))
+
+            # Receive response from server for command provided
+            res = s.recv(1024).decode('utf-8')
+            command_response = get_response_object(res)
+            # Send confirmation for command response from client
+            s.send(str({"msg": "confirmed response",
+                        "stdout": 'False'}).encode('utf-8'))
+            if command_response["stdout"] == 'True':
+                print(command_response["msg"])
 
 
-def handle_welcome_message(is_new_authenticated_user):
+def get_response_object(res):
+    return json.loads(res.replace("'", "\""))
+
+
+def handle_welcome_message(is_new_authenticated_user, s):
     if not is_new_authenticated_user:
         # If you are a returning user, there is a welcome message
         welcome_message = s.recv(1024).decode('utf-8')
         print(welcome_message)
+        # Send confirmation from client
+        s.send(str({"msg": "received welcome", "stdout": 'False'}).encode('utf-8'))
 
 ###############################################
 ##################### MAIN ####################
 ###############################################
 
 
-def run_client():
-    is_authenticated = handle_authentication()
+def run_client(s):
+    is_authenticated = handle_authentication(s)
     if is_authenticated["success"]:
-        handle_welcome_message(is_authenticated["new"])
-        handle_system_commands()
+        handle_welcome_message(is_authenticated["new"], s)
+        handle_system_commands(s)
     # close the connection
     s.close()
 
@@ -85,4 +96,4 @@ if __name__ == "__main__":
     s = socket.socket()
     port = 12345
     s.connect(('127.0.0.1', port))
-    run_client()
+    run_client(s)

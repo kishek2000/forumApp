@@ -81,12 +81,30 @@ def authenticate_client(client_conn):
 def listen_to_client_commands(client_conn, username):
     # Begin infinite loop for system use by client
     while True:
+        # Send client a message with all command options
+        commands_list = ["CRT", "MSG", "DLT", "EDT", "LST",
+                         "RDT", "UPD", "DWN", "RMV", "XIT", "SHT"]
+        command_prompt = "Enter one of the following commands: " + \
+            ", ".join(commands_list) + ": "
+        client_conn.send(command_prompt.encode('utf-8'))
+
         # Receive  option by client
         selection = client_conn.recv(1024).decode('utf-8')
-        # Print client operation
-        print(username, "issued", selection[0:3], "command")
-        # Execute the client's command selection
-        execute_command_selection(selection, username, client_conn)
+        if selection[0:3] in commands_list:
+            # Send authentication to client
+            client_conn.send(
+                str({"msg": "valid", "stdout": 'False'}).encode('utf-8')
+            )
+            # Receive confirmation from client
+            _ = client_conn.recv(1024).decode('utf-8')
+            # Print client operation
+            print(username, "issued", selection[0:3], "command")
+            # Execute the client's command selection
+            execute_command_selection(selection, username, client_conn)
+        else:
+            client_conn.send(
+                str({"msg": "Invalid command", "stdout": 'True'}).encode('utf-8')
+            )
 
 
 def get_active_threads():
@@ -94,6 +112,14 @@ def get_active_threads():
     active_threads.remove('credentials.txt')
     active_threads.remove('server.py')
     return active_threads
+
+
+def get_thread_messages(thread):
+    print("reading", thread)
+    read_thread_fd = open(thread, "r")
+    # print("lines", read_thread_fd.read().splitlines()[1:])
+    lines = read_thread_fd.read().splitlines()[1:]
+    return lines
 
 ###############################################
 ########### FORUM COMMAND FUNCTIONS ###########
@@ -131,14 +157,92 @@ def handle_post_message_command(client_command, username, client_conn):
     '''
     Handler for MSG command
     '''
+    # Strip off the thread title and message
+    thread_title = client_command.split(" ")[1]
+    message = " ".join(client_command.split(" ")[2:])
 
-    pass
+    # Check the thread_title provided is in the active threads
+    # If so, append the message with the appropriate message number
+    active_threads = get_active_threads()
+    if thread_title in active_threads:
+        read_thread_fd = open(thread_title, "r")
+        read_thread_fd_lines = read_thread_fd.read()
+        total_messages = len(read_thread_fd_lines.splitlines()) - 1
+        read_thread_fd.close()
+
+        write_thread_fd = open(thread_title, "a")
+        write_thread_fd.write(f"\n{total_messages + 1} {username}: {message}")
+        client_conn.send(
+            str({"msg": "success", "stdout": 'False'}).encode('utf-8')
+        )
+    else:
+        client_conn.send(
+            str({"msg": "Thread does not exist", "stdout": 'True'}).encode('utf-8')
+        )
+
+
+def delete_thread_message(thread_title, message_to_delete):
+    read_file_fd = open(thread_title, "r")
+    thread_creator = read_file_fd.read().splitlines()[0]
+
+    current_messages = get_thread_messages(thread_title)
+    write_file_fd = open(thread_title, "w")
+    print("messages right now in del", current_messages)
+    write_file_fd.write(f"{thread_creator}\n")
+    index = 1
+    for old_message in current_messages:
+        if old_message != message_to_delete:
+            new_message_number = index
+            updated_message = str(
+                str(new_message_number) + " " + " ".join(old_message.split(" ")[1:]) + "\n")
+            print("updated message -> ", updated_message)
+            write_file_fd.write(updated_message)
+            index += 1
 
 
 def handle_delete_message_command(client_command, username, client_conn):
     '''
     Handler for DLT command
     '''
+    # Strip off the thread title and the message number
+    thread_title = client_command.split(" ")[1]
+    message_number = client_command.split(" ")[2]
+    # Check if thread exists, then check if message exists, then check if
+    # the given username was the one who created that message
+    active_threads = get_active_threads()
+    if thread_title in active_threads:
+        thread_messages = get_thread_messages(thread_title)
+        print("messages right now in main", thread_messages)
+        total_messages = len(thread_messages)
+        message_index = int(message_number)-1
+        if total_messages > message_index:
+            message_creator = thread_messages[message_index].split(" ")[
+                1].replace(':', '')
+
+            if message_creator == username:
+                message_to_delete = thread_messages[message_index]
+                delete_thread_message(thread_title, message_to_delete)
+
+                client_conn.send(
+                    str({"msg": f"The message has been deleted",
+                         "stdout": 'True'}).encode('utf-8')
+                )
+            else:
+                client_conn.send(
+                    str({"msg": f"The message belongs to another user and cannot be edited",
+                         "stdout": 'True'}).encode('utf-8')
+                )
+        else:
+            client_conn.send(
+                str({"msg": f"The message does not exist in this thread",
+                     "stdout": 'True'}).encode('utf-8')
+            )
+    else:
+        client_conn.send(
+            str({"msg": f"Thread does not exist",
+                 "stdout": 'True'}).encode('utf-8')
+        )
+
     pass
 
 
@@ -225,6 +329,8 @@ COMMAND_SWITCH = {
     "RMV": handle_remove_thread_command,
     "XIT": handle_exit_command,
     "SHT": handle_shutdown_server_command
+
+
 }
 
 
@@ -232,6 +338,8 @@ def execute_command_selection(command_selection, username, client_conn):
     COMMAND_SWITCH[command_selection[0:3]](
         command_selection, username, client_conn
     )
+    # Receive confirmation from client
+    command_response_confirmation = client_conn.recv(1024).decode('utf-8')
 
 ###############################################
 ##################### MAIN ####################
@@ -254,6 +362,7 @@ def run_server():
             # Send a welcome message to the client for the forum if they are a returning user
             if (welcome_message and confirmation):
                 client_conn.send(str(welcome_message).encode('utf-8'))
+                _ = client_conn.recv(1024).decode('utf-8')
 
             listen_to_client_commands(client_conn, username)
         # Close the connection with the client
