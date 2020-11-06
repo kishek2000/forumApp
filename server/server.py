@@ -1,5 +1,8 @@
 import socket
 import os
+import re
+import json
+from pathlib import Path
 
 ###############################################
 ################## UTILITY FUNCTIONS ##################
@@ -93,31 +96,38 @@ def listen_to_client_commands(client_conn, username):
         if selection[0:3] in commands_list:
             # Send authentication to client
             client_conn.send(
-                str({"msg": "valid", "stdout": 'False'}).encode('utf-8')
+                str({"msg": "valid", "stdout": "False"}).encode('utf-8')
             )
             # Receive confirmation from client
             _ = client_conn.recv(1024).decode('utf-8')
             # Print client operation
             print(username, "issued", selection[0:3], "command")
             # Execute the client's command selection
-            execute_command_selection(selection, username, client_conn)
+            return_state = execute_command_selection(
+                selection, username, client_conn)
+            if return_state == False:
+                client_conn.close()
+                print(f"{username} exited")
+                break
         else:
             client_conn.send(
-                str({"msg": "Invalid command", "stdout": 'True'}).encode('utf-8')
+                str({"msg": "Invalid command", "stdout": "True"}).encode('utf-8')
             )
 
 
 def get_active_threads():
-    active_threads = os.listdir()
-    active_threads.remove('credentials.txt')
-    active_threads.remove('server.py')
+    server_files = os.listdir()
+    server_files.remove('credentials.txt')
+    server_files.remove('server.py')
+    active_threads = []
+    for file in server_files:
+        if not Path(file).suffix:
+            active_threads.append(file)
     return active_threads
 
 
 def get_thread_messages(thread):
-    print("reading", thread)
     read_thread_fd = open(thread, "r")
-    # print("lines", read_thread_fd.read().splitlines()[1:])
     lines = read_thread_fd.read().splitlines()[1:]
     return lines
 
@@ -140,13 +150,13 @@ def handle_create_thread_command(client_command, username, client_conn):
         error_message = f"Thread {thread_title} exists"
         print(error_message)
         client_conn.send(
-            str({"msg": error_message, "stdout": 'True'}).encode('utf-8')
+            str({"msg": error_message, "stdout": "True"}).encode('utf-8')
         )
     else:
         # Create file for our thread
         open(thread_title, "x")
         client_conn.send(
-            str({"msg": "success", "stdout": 'False'}).encode('utf-8')
+            str({"msg": "success", "stdout": "False"}).encode('utf-8')
         )
         # Open writable file descriptor and add username at the top
         thread_fd = open(thread_title, "a")
@@ -173,11 +183,11 @@ def handle_post_message_command(client_command, username, client_conn):
         write_thread_fd = open(thread_title, "a")
         write_thread_fd.write(f"\n{total_messages + 1} {username}: {message}")
         client_conn.send(
-            str({"msg": "success", "stdout": 'False'}).encode('utf-8')
+            str({"msg": "success", "stdout": "False"}).encode('utf-8')
         )
     else:
         client_conn.send(
-            str({"msg": "Thread does not exist", "stdout": 'True'}).encode('utf-8')
+            str({"msg": "Thread does not exist", "stdout": "True"}).encode('utf-8')
         )
 
 
@@ -187,15 +197,16 @@ def delete_thread_message(thread_title, message_to_delete):
 
     current_messages = get_thread_messages(thread_title)
     write_file_fd = open(thread_title, "w")
-    print("messages right now in del", current_messages)
     write_file_fd.write(f"{thread_creator}\n")
     index = 1
+    total_new_messages = len(current_messages) - 1
     for old_message in current_messages:
         if old_message != message_to_delete:
             new_message_number = index
-            updated_message = str(
-                str(new_message_number) + " " + " ".join(old_message.split(" ")[1:]) + "\n")
-            print("updated message -> ", updated_message)
+            updated_message = str(new_message_number) + " " + \
+                " ".join(old_message.split(" ")[1:])
+            if new_message_number < total_new_messages:
+                updated_message += "\n"
             write_file_fd.write(updated_message)
             index += 1
 
@@ -212,7 +223,6 @@ def handle_delete_message_command(client_command, username, client_conn):
     active_threads = get_active_threads()
     if thread_title in active_threads:
         thread_messages = get_thread_messages(thread_title)
-        print("messages right now in main", thread_messages)
         total_messages = len(thread_messages)
         message_index = int(message_number)-1
         if total_messages > message_index:
@@ -225,32 +235,91 @@ def handle_delete_message_command(client_command, username, client_conn):
 
                 client_conn.send(
                     str({"msg": f"The message has been deleted",
-                         "stdout": 'True'}).encode('utf-8')
+                         "stdout": "True"}).encode('utf-8')
                 )
             else:
                 client_conn.send(
                     str({"msg": f"The message belongs to another user and cannot be edited",
-                         "stdout": 'True'}).encode('utf-8')
+                         "stdout": "True"}).encode('utf-8')
                 )
+                print("Message cannot be deleted")
         else:
             client_conn.send(
                 str({"msg": f"The message does not exist in this thread",
-                     "stdout": 'True'}).encode('utf-8')
+                     "stdout": "True"}).encode('utf-8')
             )
     else:
         client_conn.send(
             str({"msg": f"Thread does not exist",
-                 "stdout": 'True'}).encode('utf-8')
+                 "stdout": "True"}).encode('utf-8')
         )
 
-    pass
+
+def update_thread_message(thread_title, message_to_update, message_index):
+    read_file_fd = open(thread_title, "r")
+    thread_creator = read_file_fd.read().splitlines()[0]
+
+    current_messages = get_thread_messages(thread_title)
+    write_file_fd = open(thread_title, "w")
+    write_file_fd.write(f"{thread_creator}\n")
+    index = 1
+    total_messages = len(current_messages)
+    for old_message in current_messages:
+        if index == message_index:
+            old_message_prefix = " ".join(old_message.split(" ")[0:2])
+            write_file_fd.write(old_message_prefix + " " + message_to_update)
+        else:
+            write_file_fd.write(old_message)
+        if index < total_messages:
+            write_file_fd.write("\n")
+        index += 1
 
 
 def handle_edit_message_command(client_command, username, client_conn):
     '''
     Handler for EDT command
     '''
-    pass
+    # Strip off the thread title and the message number
+    thread_title = client_command.split(" ")[1]
+    message_number = client_command.split(" ")[2]
+    updated_message = client_command.split(" ")[3:]
+    # Check if thread exists, then check if message exists, then check if
+    # the given username was the one who created that message
+    active_threads = get_active_threads()
+    if thread_title in active_threads:
+        thread_messages = get_thread_messages(thread_title)
+        total_messages = len(thread_messages)
+        message_index = int(message_number)
+        if total_messages >= message_index:
+            message_to_update = " ".join(updated_message)
+            message_creator = thread_messages[message_index-1].split(" ")[
+                1].replace(':', '')
+
+            if message_creator == username:
+                update_thread_message(
+                    thread_title, message_to_update, message_index
+                )
+
+                client_conn.send(
+                    str({"msg": f"The message has been updated",
+                         "stdout": "True"}).encode('utf-8')
+                )
+            else:
+                client_conn.send(
+                    str({"msg": f"The message belongs to another user and cannot be edited",
+                         "stdout": "True"}).encode('utf-8')
+                )
+                print("Message cannot be edited")
+        else:
+            client_conn.send(
+                str({"msg": f"The message does not exist in this thread",
+                     "stdout": "True"}).encode('utf-8')
+            )
+    else:
+        client_conn.send(
+            str({"msg": f"Thread does not exist",
+                 "stdout": "True"}).encode('utf-8')
+        )
 
 
 def handle_list_threads_command(client_command, username, client_conn):
@@ -265,12 +334,12 @@ def handle_list_threads_command(client_command, username, client_conn):
         active_threads_string = "\n".join(active_threads)
         client_conn.send(
             str({"msg": f"The list of active threads:\n{active_threads_string}",
-                 "stdout": 'True'}).encode('utf-8')
+                 "stdout": "True"}).encode('utf-8')
         )
     else:
         print(active_threads)
         client_conn.send(
-            str({"msg": "No threads to list", "stdout": 'True'}).encode('utf-8')
+            str({"msg": "No threads to list", "stdout": "True"}).encode('utf-8')
         )
 
 
@@ -278,6 +347,21 @@ def handle_read_thread_command(client_command, username, client_conn):
     '''
     Handler for RDT command
     '''
+    # Strip the thread title from command
+    thread_title = client_command.split(" ")[1]
+    # If it's part of the active threads, send the messages
+    active_threads = get_active_threads()
+    if thread_title in active_threads:
+        thread_messages = get_thread_messages(thread_title)
+        thread_messages_string = '\n'.join(thread_messages)
+        client_conn.send(
+            str({"msg": thread_messages_string, "stdout": "True"}).encode('utf-8')
+        )
+    else:
+        client_conn.send(
+            str({"msg": "Thread does not exist", "stdout": "True"}).encode('utf-8')
+        )
+
     pass
 
 
@@ -285,28 +369,118 @@ def handle_upload_file_command(client_command, username, client_conn):
     '''
     Handler for UPD command
     '''
-    pass
+    # Strip thread title from command
+    thread_title = client_command.split(" ")[1]
+    # Get active threads
+    active_threads = get_active_threads()
+    # Check if title is in active threads
+    if thread_title in active_threads:
+        # Confirm the thread was found to the client, and ask them for their file
+        client_conn.send(
+            str({"msg": "Thread found, send file",
+                 "stdout": "False"}).encode('utf-8')
+        )
+        # Receive username and filename from client
+        response_data = client_conn.recv(1024).decode('utf-8')
+        response_json = json.loads(re.sub(r"'(\S+)'", r'"\1"', response_data))
+        username = response_json["username"]
+        filename = response_json["filename"]
+
+        # Confirm json was received
+        client_conn.send(
+            str({"msg": "Received username and filename, send file",
+                 "stdout": "False"}).encode('utf-8')
+        )
+        # Receive file
+        new_file_contents = client_conn.recv(999999).decode()
+        new_file_fd = open(str(f"{thread_title}-{filename}"), "w")
+        new_file_fd.write(new_file_contents)
+        new_file_fd.close()
+
+        thread_fd = open(thread_title, "a")
+        thread_fd.write(str(f"\n{username} uploaded {filename}"))
+
+        # Confirm file uploaded
+        client_conn.send(
+            str({"msg": str(f"{filename} uploaded to {thread_title} thread"),
+                 "stdout": "True"}).encode('utf-8')
+        )
+        print(f"Yoda uploaded {filename} to {thread_title} thread")
+    else:
+        client_conn.send(
+            str({"msg": str(f"{thread_title} thread does not exist"),
+                 "stdout": "True"}).encode('utf-8')
+        )
 
 
 def handle_download_file_command(client_command, username, client_conn):
     '''
     Handler for DWN command
     '''
-    pass
+    # Strip thread title and filenme from command
+    thread_title = client_command.split(" ")[1]
+    filename = client_command.split(" ")[2]
+    # Get active threads
+    active_threads = get_active_threads()
+    # Check if title is in active threads
+    if thread_title in active_threads:
+        # check if the file exists in thread
+        server_files = os.listdir()
+        server_filename = str(f"{thread_title}-{filename}")
+        if server_filename in server_files:
+            thread_file_contents = open(server_filename, "r").read()
+            data_json = str({"filename": filename,
+                             "contents": thread_file_contents, "stdout": "False"})
+            client_conn.send(data_json.encode('utf-8'))
+            print(f"{filename} downloaded from {thread_title} thread")
+        else:
+            client_conn.send(
+                str({"msg": str(f"File does not exist in {thread_title} thread"),
+                     "stdout": "True"}).encode('utf-8')
+            )
+            print(f"{filename} does not exist in {thread_title} thread")
+    else:
+        client_conn.send(
+            str({"msg": str(f"{thread_title} thread does not exist"),
+                 "stdout": "True"}).encode('utf-8')
+        )
 
 
 def handle_remove_thread_command(client_command, username, client_conn):
     '''
     Handler for RMV command
     '''
-    pass
+    # Strip thread title from command
+    thread_title = client_command.split(" ")[1]
+    # Get the active threads
+    active_threads = get_active_threads()
+    # If in active thread, remove, otherwise send error
+    if thread_title in active_threads:
+        os.remove(thread_title)
+        server_files = os.listdir()
+        for file in server_files:
+            if thread_title in file:
+                os.remove(file)
+        print("Thread %s removed" % thread_title)
+
+        client_conn.send(
+            str({"msg": "Thread %s removed" %
+                 thread_title, "stdout": "True"}).encode('utf-8')
+        )
+    else:
+        client_conn.send(
+            str({"msg": "Thread does not exist", "stdout": "True"}).encode('utf-8')
+        )
 
 
 def handle_exit_command(client_command, username, client_conn):
     '''
     Handler for XIT command
     '''
-    pass
+    client_conn.send(
+        str({"msg": "Goodbye", "stdout": "True"}).encode('utf-8')
+    )
+    return False
 
 
 def handle_shutdown_server_command(client_command, username, client_conn):
@@ -335,11 +509,14 @@ COMMAND_SWITCH = {
 
 
 def execute_command_selection(command_selection, username, client_conn):
-    COMMAND_SWITCH[command_selection[0:3]](
+    return_state = COMMAND_SWITCH[command_selection[0:3]](
         command_selection, username, client_conn
     )
-    # Receive confirmation from client
-    command_response_confirmation = client_conn.recv(1024).decode('utf-8')
+    if return_state == False:
+        return False
+    else:
+        # Return confirmation from client
+        return client_conn.recv(1024).decode('utf-8')
 
 ###############################################
 ##################### MAIN ####################
